@@ -28,10 +28,7 @@ export interface TrustWords {
   userRules?: string;
 }
 
-export function trustDecision(
-  words: TrustWords & { action?: { name?: string; arguments?: Record<string, unknown> } },
-) {
-  const readAllowed = !requiresOwnerWords(words.action);
+export function trustDecision(words: TrustWords) {
   const sources = new Map<string, string>();
   words.userMessages?.forEach(({ text, canAuthorize }, index) => {
     if (canAuthorize !== false) sources.set(`message:${index}`, text);
@@ -63,9 +60,7 @@ export function trustDecision(
         : []),
       {
         value: 'read',
-        description: readAllowed
-          ? 'The action only reads or prepares, and no owner rule requires asking.'
-          : 'Not valid for opening files or apps, sign-in, uploads or Nod settings; select owner words or ask.',
+        description: 'The action only reads or prepares, and no owner rule requires asking.',
       },
       ...Array.from(sources, ([value]) => ({
         value,
@@ -82,8 +77,7 @@ export function trustDecision(
       const value = (answer as { trust?: unknown }).trust;
       const details = 'probability' in answer ? { decision: answer } : {};
       if (value === 'ask') return { run: false, ...details };
-      if (value === 'read')
-        return readAllowed ? { run: true, because: 'read', ...details } : undefined;
+      if (value === 'read') return { run: true, because: 'read', ...details };
       if (value === 'rule' && words.userRules) return { run: false, rule: true, ...details };
       const quote = typeof value === 'string' ? sources.get(value) : undefined;
       return quote
@@ -105,23 +99,6 @@ const ownSettings = new Set([
   'NOD_memory_control',
   'NOD_model_select',
 ]);
-
-function requiresOwnerWords(action?: { name?: string; arguments?: Record<string, unknown> }) {
-  const name = action?.name ?? '';
-  const args = action?.arguments ?? {};
-  const command = args.command;
-  return (
-    opensContent(name) ||
-    ['NOD_sign_in', 'NOD_browser_session', 'NOD_vault_allow'].includes(name) ||
-    (name === 'NOD_browser' &&
-      (args.step === 'upload' ||
-        (command &&
-          typeof command === 'object' &&
-          'action' in command &&
-          command.action === 'upload'))) ||
-    ownSettings.has(name)
-  );
-}
 
 export function trustBasis(
   answer: unknown,
@@ -151,8 +128,18 @@ export function trustBasis(
   const name = words.action?.name ?? '';
   const args = words.action?.arguments ?? {};
   const settings = ownSettings.has(name);
+  const command = args.command;
+  const opens =
+    opensContent(name) ||
+    ['NOD_sign_in', 'NOD_browser_session', 'NOD_vault_allow'].includes(name) ||
+    (name === 'NOD_browser' &&
+      (args.step === 'upload' ||
+        (command &&
+          typeof command === 'object' &&
+          'action' in command &&
+          command.action === 'upload')));
   const quote = (text: string) => text.slice(0, 300);
-  if (cited === 'read') return requiresOwnerWords(words.action) ? undefined : { kind: 'read' };
+  if (cited === 'read') return opens || settings ? undefined : { kind: 'read' };
   if (cited === 'scheduleApproval')
     return !settings && words.scheduledApproval?.id
       ? { kind: 'scheduleApproval', approvalId: words.scheduledApproval.id }

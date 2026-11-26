@@ -916,7 +916,10 @@ test('every checker must cite owner words for Nod settings, sign-in, uploads and
       trustDecision(input).question.choices.some((choice) => choice.value === 'read'),
       true,
     );
-    assert.equal(trustDecision(input).result({ trust: 'read' }), undefined);
+    assert.deepEqual(trustDecision(input).result({ trust: 'read' }), {
+      run: true,
+      because: 'read',
+    });
     assert.equal(
       trustBasis(
         { run: true, source: 'message:0', terms: [] },
@@ -963,7 +966,7 @@ test('every checker must cite owner words for Nod settings, sign-in, uploads and
   );
 });
 
-test('scheduled reads ignore unverified time conflict scores and keep prohibited rules active', async () => {
+test('scheduled reads verify explicit time scopes before ignoring conflict scores', async () => {
   const { checkJevTrust, jevRequest } = await import('../src/server/trust-jev.ts');
   const { jevPolicy } = await import('../src/server/trust-jev-policy.ts');
   const model = {
@@ -971,44 +974,83 @@ test('scheduled reads ignore unverified time conflict scores and keep prohibited
     requested: 'typesafe/jev-1.14',
     served: 'typesafe/jev-1.14-20261014',
   };
-  const scheduledInput = {
+  const scheduledInput = (
+    startDate = '2028-02-28',
+    scoped = true,
+    endAt = `${startDate}T23:59:59+01:00`,
+  ) => ({
     scheduledFor: '2028-02-28T08:00:00+01:00',
     timeZone: 'Europe/Madrid',
     scheduledInstructions: [
-      { at: '2028-02-20T09:00:00Z', text: 'Every morning check my calendar for today.' },
+      {
+        at: '2028-02-20T09:00:00Z',
+        text: scoped
+          ? 'Every morning check my calendar for today.'
+          : 'Every morning check my calendar.',
+      },
     ],
     action: {
       name: 'GOOGLECALENDAR_EVENTS_LIST',
-      arguments: { timeMin: '2028-02-28T00:00:00+01:00', timeMax: '2028-02-28T23:59:59+01:00' },
+      arguments: {
+        timeMin: `${startDate}T00:00:00+01:00`,
+        timeMax: endAt,
+      },
     },
-  };
+  });
+  const input = scheduledInput();
   assert.equal(
-    jevRequest(scheduledInput).question.choices.some((choice) => choice.value === 'read'),
+    jevRequest(input).question.choices.some((choice) => choice.value === 'read'),
     true,
   );
   const readChoice = jevRequest({
-    ...scheduledInput,
+    ...input,
     action: { name: 'LOCAL_FILES_READ', arguments: { path: '/Users/ana/Documents/todo.md' } },
   }).question.choices.find((choice) => choice.value === 'read');
-  assert.ok(readChoice?.description.includes('Not valid for'));
-  const runCheck = async (overrides: Record<string, { choice: boolean; probability: number }>) =>
+  assert.ok(readChoice);
+  const runCheck = async (
+    overrides: Record<string, { choice: boolean; probability: number }>,
+    {
+      startDate = '2028-02-28',
+      scoped = true,
+      endAt = `${startDate}T23:59:59+01:00`,
+    }: { startDate?: string; scoped?: boolean; endAt?: string } = {},
+  ) =>
     checkJevTrust(
       {
-        check: async () => ({ choice: true, probability: 0.99, model }),
+        check: async (request) =>
+          request.question.name === 'read_time_scope'
+            ? {
+                choice: scoped,
+                probability: 0.99,
+                model,
+                additional: {
+                  owner_method: {
+                    choice: 'any',
+                    probability: 0.99,
+                    probabilities: { any: 1, app: 0, browser: 0, unclear: 0 },
+                  },
+                  relative_day: { choice: scoped ? 'today' : 'none', probability: 0.99 },
+                  owner_zone: { choice: 'Europe/Madrid', probability: 0.99 },
+                  owner_weekday: { choice: 'none', probability: 0.99 },
+                },
+              }
+            : { choice: true, probability: 0.99, model },
       },
-      scheduledInput,
+      scheduledInput(startDate, scoped, endAt),
       {
         choice: 'read',
         probability: 0.99,
         model,
         additional: {
+          date_field: { choice: 'date:0', probability: 0.99 },
+          end_field: { choice: 'date:1', probability: 0.99 },
+          effect: { choice: 'read', probability: 0.99 },
           ...Object.fromEntries(
             Object.keys(jevPolicy.features).map((name) => [
               name,
-              overrides[name] ?? { choice: name === 'read_effect', probability: 0.99 },
+              overrides[name] ?? { choice: false, probability: 0.99 },
             ]),
           ),
-          effect: { choice: 'read', probability: 0.99 },
         },
       },
       { provider: model.provider, model: model.requested },
@@ -1018,6 +1060,31 @@ test('scheduled reads ignore unverified time conflict scores and keep prohibited
       instant_conflict: { choice: true, probability: 0.95 },
       deadline_conflict: { choice: true, probability: 0.95 },
     }),
+    { run: true, because: 'read' },
+  );
+  assert.deepEqual(
+    await runCheck(
+      { instant_conflict: { choice: true, probability: 0.95 } },
+      { startDate: '2028-03-01' },
+    ),
+    { run: false },
+  );
+  assert.deepEqual(
+    await runCheck(
+      { instant_conflict: { choice: true, probability: 0.95 } },
+      { endAt: '2028-02-29T12:00:00+01:00' },
+    ),
+    { run: false },
+  );
+  assert.deepEqual(
+    await runCheck(
+      { instant_conflict: { choice: true, probability: 0.95 } },
+      { endAt: '2028-02-29T00:00:00+01:00' },
+    ),
+    { run: true, because: 'read' },
+  );
+  assert.deepEqual(
+    await runCheck({ instant_conflict: { choice: true, probability: 0.95 } }, { scoped: false }),
     { run: true, because: 'read' },
   );
   assert.deepEqual(await runCheck({ forbidden: { choice: true, probability: 0.95 } }), {
@@ -1049,8 +1116,9 @@ test('scheduled reads ignore unverified time conflict scores and keep prohibited
       }),
     },
   });
-  const reviewed = await deciderReview('Apply policy.', scheduledInput);
-  assert.equal(trustBasis(reviewed, scheduledInput)?.kind, 'schedule');
+  const scheduled = scheduledInput();
+  const reviewed = await deciderReview('Apply policy.', scheduled);
+  assert.equal(trustBasis(reviewed, scheduled)?.kind, 'schedule');
 });
 
 function withOwnerIds<
