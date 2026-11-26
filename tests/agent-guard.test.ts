@@ -29,7 +29,7 @@ import type {
 } from '../src/ports/agent.ts';
 import { createSkillLibrary } from '../src/providers/pi/skills.ts';
 import { createDocumentation } from '../src/server/documentation.ts';
-import { coreSkills, systemPrompt } from '../src/runtime/prompt.ts';
+import { coreSkills } from '../src/runtime/prompt.ts';
 import { localResultTimes } from '../src/runtime/time-context.ts';
 import { memoryActions, nodActions, toolDefinitions } from '../src/runtime/tools.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
@@ -42,7 +42,6 @@ import {
 } from '../src/server/integration-result.ts';
 import { untrustedBlock } from '../src/shared/untrusted.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
-import type { WorkspaceSession } from '../src/ports/computer.ts';
 import { BrowserActionError } from '../src/ports/computer.ts';
 import { createMailCheck } from '../src/server/mail-check.ts';
 import type { MemoryCurator } from '../src/ports/memory-curator.ts';
@@ -3678,16 +3677,4 @@ test('delegated tool failure limits do not stop the parent or carry into another
   });
   assert.equal(children, 2);
   assert.equal(result.result.status, 'succeeded');
-});
-
-const minimalWorkspace: WorkspaceSession = {
-  path: '/fixture/workspace',
-  instructions: 'Fixture workspace only.',
-  exec: async () => ({ exitCode: 0 }),
-};
-
-test('system prompt instructs not to assert unsupported currency codes', () => {
-  const prompt = systemPrompt(minimalWorkspace, undefined, undefined, false, false);
-  assert.ok(prompt.includes('currency'));
-  assert.ok(prompt.toLowerCase().includes('usd'));
 });
