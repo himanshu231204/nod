@@ -181,10 +181,7 @@ export function createTrustReview(options: {
       (!prepared &&
         (certainty < 0.99 ||
           (permission.permission &&
-            (preparationCertainty < 0.99 ||
-              !source?.run ||
-              source.because === 'read' ||
-              evidenceCertainty < 0.5))));
+            (!source?.run || source.because === 'read' || evidenceCertainty < 0.5))));
     if (uncertain) return { run: false, decision: answer };
     if (prepared) return { run: true, because: 'read', decision: answer };
     if (!permission.permission)

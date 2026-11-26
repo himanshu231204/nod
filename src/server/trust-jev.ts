@@ -593,8 +593,8 @@ export async function checkJevTrust(
     scores.ask_first >= 0.99 ||
     scores.method_conflict >= 0.95 ||
     methodMismatch ||
-    (!verifiedTime && scores.instant_conflict >= timeLimit) ||
-    scores.deadline_conflict >= timeLimit ||
+    (!read && !verifiedTime && scores.instant_conflict >= timeLimit) ||
+    (!read && scores.deadline_conflict >= timeLimit) ||
     dateMismatch ||
     times.mismatch;
   const hard = prohibited || times.uncertain || methodUncertain || (!read && grant <= 0.1);

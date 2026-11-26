@@ -913,6 +913,11 @@ test('every checker must cite owner words for Nod settings, sign-in, uploads and
       undefined,
     );
     assert.equal(
+      trustDecision(input).question.choices.some((choice) => choice.value === 'read'),
+      true,
+    );
+    assert.equal(trustDecision(input).result({ trust: 'read' }), undefined);
+    assert.equal(
       trustBasis(
         { run: true, source: 'message:0', terms: [] },
         withOwnerIds(input, ['owner-message']),
@@ -920,6 +925,27 @@ test('every checker must cite owner words for Nod settings, sign-in, uploads and
       'message',
     );
   }
+  const mailRead = {
+    ...words,
+    action: { name: 'GMAIL_FETCH_EMAILS', arguments: { max_results: 5 } },
+  };
+  assert.equal(
+    trustDecision(mailRead).question.choices.some((choice) => choice.value === 'read'),
+    true,
+  );
+  assert.deepEqual(trustDecision(mailRead).result({ trust: 'read' }), {
+    run: true,
+    because: 'read',
+  });
+  const scheduledMail = {
+    scheduledInstructions: [{ at: '2028-02-20T09:00:00Z', text: 'Check my mail every morning.' }],
+    action: mailRead.action,
+  };
+  assert.equal(
+    trustBasis({ run: true, because: 'schedule:0', terms: [] }, scheduledMail)?.kind,
+    'schedule',
+  );
+  assert.equal(trustBasis({ run: true, because: 'freeform quote' }, scheduledMail), undefined);
   const action = { name: 'NOD_limits_update' };
   assert.equal(
     trustBasis(
@@ -935,6 +961,96 @@ test('every checker must cite owner words for Nod settings, sign-in, uploads and
     )?.kind,
     'rule',
   );
+});
+
+test('scheduled reads ignore unverified time conflict scores and keep prohibited rules active', async () => {
+  const { checkJevTrust, jevRequest } = await import('../src/server/trust-jev.ts');
+  const { jevPolicy } = await import('../src/server/trust-jev-policy.ts');
+  const model = {
+    provider: 'openrouter',
+    requested: 'typesafe/jev-1.14',
+    served: 'typesafe/jev-1.14-20261014',
+  };
+  const scheduledInput = {
+    scheduledFor: '2028-02-28T08:00:00+01:00',
+    timeZone: 'Europe/Madrid',
+    scheduledInstructions: [
+      { at: '2028-02-20T09:00:00Z', text: 'Every morning check my calendar for today.' },
+    ],
+    action: {
+      name: 'GOOGLECALENDAR_EVENTS_LIST',
+      arguments: { timeMin: '2028-02-28T00:00:00+01:00', timeMax: '2028-02-28T23:59:59+01:00' },
+    },
+  };
+  assert.equal(
+    jevRequest(scheduledInput).question.choices.some((choice) => choice.value === 'read'),
+    true,
+  );
+  const readChoice = jevRequest({
+    ...scheduledInput,
+    action: { name: 'LOCAL_FILES_READ', arguments: { path: '/Users/ana/Documents/todo.md' } },
+  }).question.choices.find((choice) => choice.value === 'read');
+  assert.ok(readChoice?.description.includes('Not valid for'));
+  const runCheck = async (overrides: Record<string, { choice: boolean; probability: number }>) =>
+    checkJevTrust(
+      {
+        check: async () => ({ choice: true, probability: 0.99, model }),
+      },
+      scheduledInput,
+      {
+        choice: 'read',
+        probability: 0.99,
+        model,
+        additional: {
+          ...Object.fromEntries(
+            Object.keys(jevPolicy.features).map((name) => [
+              name,
+              overrides[name] ?? { choice: name === 'read_effect', probability: 0.99 },
+            ]),
+          ),
+          effect: { choice: 'read', probability: 0.99 },
+        },
+      },
+      { provider: model.provider, model: model.requested },
+    );
+  assert.deepEqual(
+    await runCheck({
+      instant_conflict: { choice: true, probability: 0.95 },
+      deadline_conflict: { choice: true, probability: 0.95 },
+    }),
+    { run: true, because: 'read' },
+  );
+  assert.deepEqual(await runCheck({ forbidden: { choice: true, probability: 0.95 } }), {
+    run: false,
+  });
+  const deciderReview = createTrustReview({
+    review: async () => assert.fail('Decision mode must not call an LLM.'),
+    decisions: {
+      check: async () => ({
+        trust: 'schedule:0',
+        choice: 'schedule:0',
+        probability: 0.99,
+        model: {
+          requested: 'perplexity/pplx-decider-v1.2',
+          served: 'perplexity/pplx-decider-v1.2-20261016',
+        },
+        additional: {
+          preparation: { preparation: false, probability: 0.7 },
+          permission: { permission: true, choice: true, probability: 0.995 },
+          scope: { choice: true, probability: 0.99 },
+          constraints: { choice: false, probability: 0.99 },
+          time: { choice: false, probability: 0.99 },
+          numbers: { choice: false, probability: 0.99 },
+          conditions: { choice: false, probability: 0.99 },
+          targets: { choice: false, probability: 0.99 },
+          bans: { choice: false, probability: 0.99 },
+          costs: { choice: false, probability: 0.99 },
+        },
+      }),
+    },
+  });
+  const reviewed = await deciderReview('Apply policy.', scheduledInput);
+  assert.equal(trustBasis(reviewed, scheduledInput)?.kind, 'schedule');
 });
 
 function withOwnerIds<
